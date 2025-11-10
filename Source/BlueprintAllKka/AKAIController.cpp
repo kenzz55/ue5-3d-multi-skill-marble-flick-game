@@ -7,6 +7,7 @@
 #include "AKStone.h"
 #include "Kismet/KismetSystemLibrary.h"
 
+// 프로토타입1 버전
 void AAKAIController::DoAITurn(float BasePowerPerMeter, float MinPower, float MaxPower)
 {
 	AAKSingleGameMode* GM = Cast<AAKSingleGameMode>(UGameplayStatics::GetGameMode(this));
@@ -58,7 +59,7 @@ void AAKAIController::DoAITurn(float BasePowerPerMeter, float MinPower, float Ma
 
 	if (!FindClearDirection_Line(this, From, To, TraceChannel, Ignore, Dir))
 	{
-		// 전부 막혔다면: 그냥 직선(혹은 다른 적 재시도 로직)
+		// 전부 막혔다면: 그냥 직선
 		UE_LOG(LogTemp, Warning, TEXT("LineTrace blocked"));
 		Dir = (To - From).GetSafeNormal();
 	}
@@ -100,7 +101,7 @@ bool AAKAIController::FindClearDirection_Line(UObject* WorldCtx, const FVector& 
 	//검사 거리
 	const float RayLen = (To - From).Length();
 
-	// 각도별 테스트, 0도(직선 먼저)
+	// 각도별 테스트, 직선 먼저
 	for (float Deg : OffsetsDeg)
 	{
 		const FRotator Rot(0.f, Deg, 0.f);         //회전값        
@@ -120,7 +121,7 @@ void AAKAIController::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// 레벨에서 Tag=="BoardBounds" 가진 액터를 찾아 Bounds 사용
+
 	TArray<AActor*> BoundsActors;
 	UGameplayStatics::GetAllActorsWithTag(this, FName("BoardBounds"), BoundsActors);
 
@@ -313,30 +314,28 @@ FStoneSimResult AAKAIController::SimulateShotApprox(const FVector& ShooterStart,
 	const FVector NDir = Dir.GetSafeNormal();
 	if (NDir.IsNearlyZero() || ShooterMass <= 0.f) { R.FinalPos = ShooterStart; return R; }
 
-	// 초기 속도(Impulse/Mass 근사)
+	// 초기 속도
 	const FVector v0 = (Power / ShooterMass) * NDir;
 	const float   speed0 = v0.Size();
 	if (speed0 <= KINDA_SMALL_NUMBER) { R.FinalPos = ShooterStart; return R; }
 
-	// 장애물 무시 리스트: 슈터/타깃(돌끼리 충돌은 우리가 별도 근사하므로)
+	// 장애물 무시 리스트: 슈터/타깃
 	TArray<AActor*> IgnoreActors;
 
 	// 무충돌 정지거리
 	float preStopDist = PredictStopDistance(speed0, ShooterDamping);
 
-	// 타깃과의 1회 충돌 여부 (원–선분 근사)
+	// 타깃과의 1회 충돌 여부 
 	const float hitRadius = ShooterRadius + TargetRadius;
 	const bool  bHitTarget = SegmentHitsDisc2D(ShooterStart, NDir, preStopDist, TargetStart, hitRadius);
 
-	// ──────────────────────
-	// ① 타깃 무충돌 케이스
-	// ──────────────────────
+
 	if (!bHitTarget)
 	{
 		// 장애물로 클램프
 		const float sAvail = AvailableTravelUntilHit(ShooterStart, NDir, preStopDist, TraceChannel, IgnoreActors);
 
-		// (선택) 1회 반사
+		//  1회 반사
 		if (bEnableOneBounce && sAvail + 1.f < preStopDist) // 1.f 여유: 히트가 있었음을 대충 감지
 		{
 			// 첫 히트 포인트
@@ -371,10 +370,8 @@ FStoneSimResult AAKAIController::SimulateShotApprox(const FVector& ShooterStart,
 		return R;
 	}
 
-	// ──────────────────────
-	// ② 타깃 1회 충돌 케이스
-	// ──────────────────────
-	// “히트 포인트” 근사
+
+	// 히트 포인트 근사
 	const FVector S0 = ShooterStart;
 	const FVector T0 = TargetStart;
 	const FVector ST = T0 - S0;
@@ -407,9 +404,9 @@ FStoneSimResult AAKAIController::SimulateShotApprox(const FVector& ShooterStart,
 	const FVector d1 = v1_after.GetSafeNormal();
 	const FVector d2 = v2_after.GetSafeNormal();
 
-	// ── 슈터 이동: 장애물 클램프 + (옵션) 반사 1회
+	// ── 슈터 이동: 장애물 클램프 + 반사 1회
 	{
-		// 먼저 HitPoint까지 가는 구간에서의 장애물은 이미 없다고 가정(타깃이 가장 먼저 걸림)
+		// 먼저 HitPoint까지 가는 구간에서의 장애물은 이미 없다고 가정
 		// Hit 이후 잔여 거리 이동을 클램프
 		float s1Avail = AvailableTravelUntilHit(HitPoint, d1, s1, TraceChannel, IgnoreActors);
 
@@ -446,7 +443,7 @@ FStoneSimResult AAKAIController::SimulateShotApprox(const FVector& ShooterStart,
 		R.bShooterOut = IsOutOfBoardRect(shooterEnd);
 	}
 
-	// ── 타깃 이동: 장애물 클램프 + (옵션) 반사 1회
+	// ── 타깃 이동: 장애물 클램프 +  반사 1회
 	{
 		float s2Avail = AvailableTravelUntilHit(T0, d2, s2, TraceChannel, IgnoreActors);
 
@@ -507,7 +504,7 @@ float AAKAIController::EvaluateShotHeuristic(const FAKShot& Shot) const
 		StoneRadius, StoneRadius,
 		RestCoef,
 		ECC_Visibility,
-		/*bEnableOneBounce=*/true   // ← 우선 끄고(빠른 버전), 아래 휴리스틱으로 보정
+		/*bEnableOneBounce=*/true   // ← 우선 끄고, 아래 휴리스틱으로 보정
 	);
 
 	float score = 0.f;
@@ -538,13 +535,12 @@ float AAKAIController::EvaluateShotHeuristic(const FAKShot& Shot) const
 		TArray<AActor*> Ignore = { Shot.Shooter, Shot.Target };
 		const float clearFrac = OutwardClearFraction(targetStart, nOut, ECC_Visibility, Ignore); // 0~1
 
-		// “아웃 잠재력” = 정렬 * 클리어 비율
 		const float outPotential = alignOut * clearFrac;
 
 		// 아웃 보상 스케일
 		score += 100.f * outPotential;
 
-		// 뒤가 막혀 있으면(=clearFrac 낮음) 추가 감점으로 “쓸모없는 아웃 시도” 피하기
+		// 뒤가 막혀 있으면(=clearFrac 낮음) 추가 감점으로
 		if (alignOut > 0.5f && clearFrac < 0.3f) score -= 15.f;
 	}
 
