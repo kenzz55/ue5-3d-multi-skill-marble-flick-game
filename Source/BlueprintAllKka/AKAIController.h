@@ -6,10 +6,6 @@
 #include "GameFramework/PlayerController.h"
 #include "AKAIController.generated.h"
 
-/**
- * 
- */
-
 class AAKStone;
 
 USTRUCT()
@@ -19,20 +15,44 @@ struct FAKShot
 
 	UPROPERTY() AAKStone* Shooter = nullptr;
 	UPROPERTY() AAKStone* Target = nullptr;
+	UPROPERTY() int32 ShooterIndex = INDEX_NONE;
+	UPROPERTY() int32 TargetIndex = INDEX_NONE;
 
-	FVector Dir = FVector::ZeroVector;  // ¹ß»ç ¹æÇâ
-	float   Power = 0.f;    
-	float   Score = 0;                // ÈÞ¸®½ºÆ½ Æò°¡
+	FVector Dir = FVector::ZeroVector;
+	float   Power = 0.f;
+	float   Score = 0.f;
 };
 
 USTRUCT()
 struct FStoneSimResult
 {
 	GENERATED_BODY()
+
 	FVector FinalPos = FVector::ZeroVector;
+	FVector TargetFinalPos = FVector::ZeroVector;
 	FVector FinalVel = FVector::ZeroVector;
 	bool    bShooterOut = false;
 	bool    bTargetOut = false;
+};
+
+USTRUCT()
+struct FAKStoneState
+{
+	GENERATED_BODY()
+
+	UPROPERTY() TWeakObjectPtr<AAKStone> SourceStone;
+	FVector Pos = FVector::ZeroVector;
+	bool bOut = false;
+	bool bIsAI = false;
+};
+
+USTRUCT()
+struct FAKBoardState
+{
+	GENERATED_BODY()
+
+	UPROPERTY() TArray<FAKStoneState> Stones;
+	bool bAITurn = true;
 };
 
 UCLASS()
@@ -41,14 +61,12 @@ class BLUEPRINTALLKKA_API AAKAIController : public APlayerController
 	GENERATED_BODY()
 
 //////////////////////////////////////////////////////////////////
-	// === ÇÁ·ÎÅäÅ¸ÀÔ 1 ===
+	// === í”„ë¡œí† íƒ€ìž… 1 ===
 public:
 	UFUNCTION(BlueprintCallable, Category = "Alkkagi|AI")
-	void DoAITurn(float BasePowerPerMeter, float MinPower, float MaxPower); 
-	
-private:
+	void DoAITurn(float BasePowerPerMeter, float MinPower, float MaxPower);
 
-	// ¶óÀÎÆ®·¹ÀÌ½º·Î Àå¾Ö¹° Ãæµ¹ ÆÇÁ¤ ¿©ºÎ °Ë»ç ÇÔ¼ö
+private:
 	static bool IsLineClear(UObject* WorldCtx,
 		const FVector& Start,
 		const FVector& End,
@@ -79,13 +97,11 @@ public:
 	void DoAITurn_Strategic(float BasePowerPerMeter, float MinPower, float MaxPower);
 
 private:
-	// === º¸µå À¯Æ¿ÇÔ¼ö ===
 	bool     IsOutOfBoardRect(const FVector& P) const;
-	float    EdgeMarginRect(const FVector& P) const; // +ÀÌ¸é ¾ÈÂÊ ¿©À¯, -¸é ÀÌ¹Ì ¹Û
+	float    EdgeMarginRect(const FVector& P) const;
 	FVector2D RectCenter() const { return (BoardMin + BoardMax) * 0.5f; }
 	FVector2D OutwardEdgeNormalAt(const FVector& P) const;
 
-	// === ¼öÇÐÀû ±Ù»ç ½Ã¹Ä =================
 	float PredictStopDistance(float Speed0, float DampingEff) const;
 	bool  SegmentHitsDisc2D(const FVector& From, const FVector& Dir, float Range,
 		const FVector& Center, float Radius) const;
@@ -96,7 +112,6 @@ private:
 		const TArray<AActor*>& ActorsToIgnore
 	) const;
 
-	// 1È¸ ¹Ý»ç: Ãæµ¹ Á¤º¸¿Í ÀÔ»ç ¹æÇâÀ¸·Î ¹Ý»ç ¹æÇâ °è»ê
 	bool ReflectOnce(const FHitResult& Hit, const FVector& InDir, FVector& OutReflectedDir) const;
 
 	FStoneSimResult SimulateShotApprox(
@@ -106,33 +121,50 @@ private:
 		float ShooterRadius, float TargetRadius,
 		float Restitution,
 		ECollisionChannel TraceChannel = ECC_Visibility,
-		bool bEnableOneBounce = false   
+		bool bEnableOneBounce = false,
+		const TArray<AActor*>* ActorsToIgnore = nullptr
 	) const;
-	// ====================================
 
 	float EvaluateShotHeuristic(const FAKShot& Shot) const;
-
-	// ¹Ì´Ï¸Æ½º¿ë - ÆÀ ±¸ºÐ Á¡¼ö
 	float EvaluateShotForSide(const FAKShot& Shot, bool bShooterIsAI) const;
 
-	// »ó´ë ÀÀ¼ö(ÃÖ¾ÇÀÇ °æ¿ì)
-	float OpponentBestReplyScore(const TArray<AAKStone*>& OpponentStones,
-		const TArray<AAKStone*>& MyStones, float BasePowerPerMeter,
-		float MinPower, float MaxPower,
-		int32 BeamOpp) const;
+	FAKBoardState BuildBoardState(const TArray<AAKStone*>& MyStones,
+		const TArray<AAKStone*>& EnemyStones,
+		bool bAITurn) const;
 
-	// ±íÀÌ 2 ¹Ì´Ï¸Æ½º
+	void GenerateCandidatesForState(const FAKBoardState& State,
+		TArray<FAKShot>& OutShots,
+		float BasePowerPerMeter,
+		float MinPower,
+		float MaxPower) const;
+
+	FAKBoardState ApplyShotToState(const FAKBoardState& State, const FAKShot& Shot) const;
+	float EvaluateBoardState(const FAKBoardState& State) const;
+	float EvaluateActionImmediate(const FAKBoardState& State, const FAKShot& Shot) const;
+	bool IsTerminalState(const FAKBoardState& State) const;
+	float MinimaxScore(const FAKBoardState& State,
+		int32 Depth,
+		float Alpha,
+		float Beta,
+		float BasePowerPerMeter,
+		float MinPower,
+		float MaxPower,
+		int32 BeamWidth) const;
+
 	FAKShot PickBestShot_MinimaxD2(const TArray<AAKStone*>& MyStones,
 		const TArray<AAKStone*>& EnemyStones, float BasePowerPerMeter,
 		float MinPower, float MaxPower,
 		int32 BeamMy, int32 BeamOpp) const;
 
-
-	// ===== ÈÞ¸®½ºÆ½ º¸Á¤, Àå¾Ö¹° Ãæµ¹ ¼öÇÐÀû ½Ã¹Ä °í·Á¾ÈÇßÀ» ¶§ »ç¿ë, Å×½ºÆ®¿ë ====
 	float DistanceToEdgeAlongNormal(const FVector& P, const FVector2D& nOut) const;
 	float OutwardClearFraction(const FVector& Start, const FVector2D& nOut, ECollisionChannel Channel,
 		const TArray<AActor*>& ActorsToIgnore) const;
-
+	bool SegmentHitsStone2D(const FVector& From, const FVector& To, const FVector& Center, float Radius) const;
+	float OutwardClearFractionForState(const FAKBoardState& State, int32 StoneIndex, const FVector2D& nOut) const;
+	void KClosestEnemies_StateAware(const FAKBoardState& State,
+		int32 ShooterIndex,
+		int32 K,
+		TArray<int32>& OutTargetIndices) const;
 
 	void KClosestEnemies_PathAware(
 		const TArray<class AAKStone*>& Enemies,
@@ -147,9 +179,8 @@ private:
 	FVector2D BoardMax = FVector2D(0.f, 0.f);
 	FVector BoardCenter;
 
-	float StoneRadius = 35.f;  // cm
-	float MassStone = 60.f;  // kg
-	float LinDamp = 0.4f;  // °¨¼è ±Ù»ç °è¼ö
-	float RestCoef = 0.5f;  // Åº¼º°è¼ö e (0~1)
+	float StoneRadius = 35.f;
+	float MassStone = 60.f;
+	float LinDamp = 0.4f;
+	float RestCoef = 0.5f;
 };
-
