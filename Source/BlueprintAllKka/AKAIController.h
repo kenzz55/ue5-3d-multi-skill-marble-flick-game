@@ -21,6 +21,7 @@ struct FAKShot
 	FVector Dir = FVector::ZeroVector;
 	float   Power = 0.f;
 	float   Score = 0.f;
+	float   ImmediateScore = 0.f;
 };
 
 USTRUCT()
@@ -127,6 +128,11 @@ private:
 
 	float EvaluateShotHeuristic(const FAKShot& Shot) const;
 	float EvaluateShotForSide(const FAKShot& Shot, bool bShooterIsAI) const;
+	float EvaluateStoneThreat(const FAKBoardState& State, int32 DefenderIndex) const;
+	float EvaluateSideThreatExposure(const FAKBoardState& State, bool bForAI) const;
+	float ScoreCandidateOrdering(const FAKBoardState& State, const FAKShot& Shot) const;
+	bool AreShotsEquivalentForState(const FAKBoardState& State, const FAKShot& A, const FAKShot& B) const;
+	void DeduplicateCandidatesForState(const FAKBoardState& State, TArray<FAKShot>& InOutShots) const;
 
 	FAKBoardState BuildBoardState(const TArray<AAKStone*>& MyStones,
 		const TArray<AAKStone*>& EnemyStones,
@@ -183,4 +189,36 @@ private:
 	float MassStone = 60.f;
 	float LinDamp = 0.4f;
 	float RestCoef = 0.5f;
+
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alkkagi|AI|Search")
+	int32 SearchDepth = 2;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alkkagi|AI|Search")
+	int32 RootBeamWidth = 6;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alkkagi|AI|Search")
+	int32 ReplyBeamWidth = 5;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alkkagi|AI|Debug")
+	bool bLogAIDecision = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alkkagi|AI|Debug", meta = (ClampMin = "1", ClampMax = "10"))
+	int32 DebugTopCandidateCount = 3;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alkkagi|AI|Debug")
+	bool bLogAIPerf = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alkkagi|AI|Tuning")
+	float ThreatPenaltyWeight = 35.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alkkagi|AI|Tuning")
+	float CandidatePressureWeight = 20.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alkkagi|AI|Tuning")
+	float BaseShotPower = 70000.f;
+
+private:
+	mutable int32 PerfVisitedNodes = 0;
+	mutable int32 PerfRootCandidateCount = 0;
 };

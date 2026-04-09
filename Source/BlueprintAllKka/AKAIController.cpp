@@ -6,6 +6,7 @@
 
 #include "AKSingleGameMode.h"
 #include "AKStone.h"
+#include "HAL/PlatformTime.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
 
@@ -166,7 +167,7 @@ void AAKAIController::GenerateMyCandidates(const TArray<AAKStone*>& MyStones, co
 			S.Dir = MakeFlatDir(From, BoardCenter);
 
 			const float Dist = FVector::Dist2D(From, BoardCenter);
-			const float Scaled = Dist * BasePowerPerMeter;
+			const float Scaled = BaseShotPower + Dist * BasePowerPerMeter;
 			const float BoardRadius = FVector::Dist2D(BoardCenter, FVector(BoardMax, 0.f));
 			const float ScaleK = FMath::GetMappedRangeValueClamped(FVector2D(0.f, BoardRadius), FVector2D(0.6f, 1.f), Dist);
 			S.Power = FMath::Clamp(Scaled * ScaleK, MinPower, MaxPower);
@@ -179,13 +180,13 @@ void AAKAIController::GenerateMyCandidates(const TArray<AAKStone*>& MyStones, co
 			const FVector To = Target->GetActorLocation();
 			const FVector Dir = MakeFlatDir(From, To);
 
-			for (float PScale : { 0.7f, 1.0f, 1.3f })
+			for (float PScale : { 0.45f, 0.9f, 1.5f })
 			{
 				FAKShot S;
 				S.Shooter = Shooter;
 				S.Target = Target;
 				S.Dir = Dir;
-				S.Power = FMath::Clamp(FVector::Dist(From, To) * BasePowerPerMeter * PScale, MinPower, MaxPower);
+				S.Power = FMath::Clamp(BaseShotPower + FVector::Dist(From, To) * BasePowerPerMeter * PScale, MinPower, MaxPower);
 				OutShots.Add(S);
 			}
 		}
@@ -262,7 +263,7 @@ void AAKAIController::GenerateCandidatesForState(const FAKBoardState& State, TAr
 			Shot.Dir = MakeFlatDir(Shooter.Pos, BoardCenter);
 
 			const float Dist = FVector::Dist2D(Shooter.Pos, BoardCenter);
-			const float Scaled = Dist * BasePowerPerMeter;
+			const float Scaled = BaseShotPower + Dist * BasePowerPerMeter;
 			const float BoardRadius = FVector::Dist2D(BoardCenter, FVector(BoardMax, 0.f));
 			const float ScaleK = FMath::GetMappedRangeValueClamped(FVector2D(0.f, BoardRadius), FVector2D(0.6f, 1.f), Dist);
 			Shot.Power = FMath::Clamp(Scaled * ScaleK, MinPower, MaxPower);
@@ -275,7 +276,7 @@ void AAKAIController::GenerateCandidatesForState(const FAKBoardState& State, TAr
 			const FAKStoneState& Target = State.Stones[TargetIndex];
 			const FVector Dir = MakeFlatDir(Shooter.Pos, Target.Pos);
 
-			for (float PScale : { 0.7f, 1.0f, 1.3f })
+			for (float PScale : { 0.45f, 0.9f, 1.5f })
 			{
 				FAKShot Shot;
 				Shot.Shooter = Shooter.SourceStone.Get();
@@ -283,11 +284,13 @@ void AAKAIController::GenerateCandidatesForState(const FAKBoardState& State, TAr
 				Shot.ShooterIndex = ShooterIndex;
 				Shot.TargetIndex = TargetIndex;
 				Shot.Dir = Dir;
-				Shot.Power = FMath::Clamp(FVector::Dist2D(Shooter.Pos, Target.Pos) * BasePowerPerMeter * PScale, MinPower, MaxPower);
+				Shot.Power = FMath::Clamp(BaseShotPower + FVector::Dist2D(Shooter.Pos, Target.Pos) * BasePowerPerMeter * PScale, MinPower, MaxPower);
 				OutShots.Add(Shot);
 			}
 		}
 	}
+
+	DeduplicateCandidatesForState(State, OutShots);
 }
 
 void AAKAIController::DoAITurn_Strategic(float BasePowerPerMeter, float MinPower, float MaxPower)
@@ -300,12 +303,49 @@ void AAKAIController::DoAITurn_Strategic(float BasePowerPerMeter, float MinPower
 
 	const TArray<AAKStone*>& My = GM->StonesT2;
 	const TArray<AAKStone*>& Opp = GM->StonesT1;
-	const FAKShot Best = PickBestShot_MinimaxD2(My, Opp, BasePowerPerMeter, MinPower, MaxPower, 6, 5);
+	PerfVisitedNodes = 0;
+	PerfRootCandidateCount = 0;
+	const double StartTime = FPlatformTime::Seconds();
+	const FAKShot Best = PickBestShot_MinimaxD2(
+		My,
+		Opp,
+		BasePowerPerMeter,
+		MinPower,
+		MaxPower,
+		FMath::Max(1, RootBeamWidth),
+		FMath::Max(1, ReplyBeamWidth));
+	const double ElapsedMs = (FPlatformTime::Seconds() - StartTime) * 1000.0;
 
 	if (IsValid(Best.Shooter))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[AI:Minimax] dir=(%.2f,%.2f) power=%.1f score=%.1f shooter=%d target=%d"),
-			Best.Dir.X, Best.Dir.Y, Best.Power, Best.Score, Best.ShooterIndex, Best.TargetIndex);
+		if (bLogAIPerf)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[AI:Perf] depth=%d rootBeam=%d replyBeam=%d rootCandidates=%d visitedNodes=%d decisionTime=%.3f ms"),
+				FMath::Max(1, SearchDepth),
+				FMath::Max(1, RootBeamWidth),
+				FMath::Max(1, ReplyBeamWidth),
+				PerfRootCandidateCount,
+				PerfVisitedNodes,
+				ElapsedMs);
+		}
+
+		if (bLogAIDecision)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[AI:Minimax] dir=(%.2f,%.2f) power=%.1f immediate=%.1f minimax=%.1f shooter=%d target=%d depth=%d rootBeam=%d replyBeam=%d"),
+				Best.Dir.X,
+				Best.Dir.Y,
+				Best.Power,
+				Best.ImmediateScore,
+				Best.Score,
+				Best.ShooterIndex,
+				Best.TargetIndex,
+				FMath::Max(1, SearchDepth),
+				FMath::Max(1, RootBeamWidth),
+				FMath::Max(1, ReplyBeamWidth));
+		}
+
 		Best.Shooter->Shoot(Best.Dir, Best.Power);
 	}
 }
@@ -634,6 +674,166 @@ float AAKAIController::EvaluateShotForSide(const FAKShot& Shot, bool bShooterIsA
 	return bShooterIsAI ? S : -S;
 }
 
+float AAKAIController::EvaluateStoneThreat(const FAKBoardState& State, int32 DefenderIndex) const
+{
+	if (!State.Stones.IsValidIndex(DefenderIndex))
+	{
+		return 0.f;
+	}
+
+	const FAKStoneState& Defender = State.Stones[DefenderIndex];
+	if (Defender.bOut)
+	{
+		return 0.f;
+	}
+
+	const FVector2D NOut = OutwardEdgeNormalAt(Defender.Pos);
+	const float ClearFrac = OutwardClearFractionForState(State, DefenderIndex, NOut);
+	const float EdgeMargin = EdgeMarginRect(Defender.Pos);
+	const float EdgeDanger = 1.f - FMath::Clamp(EdgeMargin / 220.f, 0.f, 1.f);
+
+	float BestThreat = 0.f;
+	for (int32 ShooterIndex = 0; ShooterIndex < State.Stones.Num(); ++ShooterIndex)
+	{
+		if (ShooterIndex == DefenderIndex)
+		{
+			continue;
+		}
+
+		const FAKStoneState& Shooter = State.Stones[ShooterIndex];
+		if (Shooter.bOut || Shooter.bIsAI == Defender.bIsAI)
+		{
+			continue;
+		}
+
+		bool bBlocked = false;
+		for (int32 BlockerIndex = 0; BlockerIndex < State.Stones.Num(); ++BlockerIndex)
+		{
+			if (BlockerIndex == ShooterIndex || BlockerIndex == DefenderIndex || State.Stones[BlockerIndex].bOut)
+			{
+				continue;
+			}
+
+			if (SegmentHitsStone2D(Shooter.Pos, Defender.Pos, State.Stones[BlockerIndex].Pos, StoneRadius * 2.f))
+			{
+				bBlocked = true;
+				break;
+			}
+		}
+
+		if (bBlocked)
+		{
+			continue;
+		}
+
+		const FVector2D AttackDir = FVector2D(
+			Defender.Pos.X - Shooter.Pos.X,
+			Defender.Pos.Y - Shooter.Pos.Y).GetSafeNormal();
+		const float OutAlign = FMath::Max(0.f, FVector2D::DotProduct(AttackDir, NOut.GetSafeNormal()));
+		const float Dist = FVector::Dist2D(Shooter.Pos, Defender.Pos);
+		const float DistFactor = 1.f - FMath::Clamp(Dist / 900.f, 0.f, 1.f);
+		const float Threat = OutAlign * (0.45f + 0.55f * ClearFrac) * (0.35f + 0.65f * EdgeDanger) * DistFactor;
+		BestThreat = FMath::Max(BestThreat, Threat);
+	}
+
+	return BestThreat;
+}
+
+float AAKAIController::EvaluateSideThreatExposure(const FAKBoardState& State, bool bForAI) const
+{
+	float Exposure = 0.f;
+
+	for (int32 StoneIndex = 0; StoneIndex < State.Stones.Num(); ++StoneIndex)
+	{
+		const FAKStoneState& Stone = State.Stones[StoneIndex];
+		if (Stone.bOut || Stone.bIsAI != bForAI)
+		{
+			continue;
+		}
+
+		Exposure += EvaluateStoneThreat(State, StoneIndex);
+	}
+
+	return Exposure;
+}
+
+float AAKAIController::ScoreCandidateOrdering(const FAKBoardState& State, const FAKShot& Shot) const
+{
+	const FAKBoardState Next = ApplyShotToState(State, Shot);
+	const float BoardScore = EvaluateBoardState(Next);
+	const float ThreatDelta = EvaluateSideThreatExposure(Next, false) - EvaluateSideThreatExposure(Next, true);
+	const float SidePressure = EvaluateShotForSide(Shot, State.bAITurn);
+	return BoardScore + ThreatDelta * ThreatPenaltyWeight + SidePressure * CandidatePressureWeight;
+}
+
+bool AAKAIController::AreShotsEquivalentForState(const FAKBoardState& State, const FAKShot& A, const FAKShot& B) const
+{
+	if (A.ShooterIndex != B.ShooterIndex || A.TargetIndex != B.TargetIndex)
+	{
+		return false;
+	}
+
+	const FVector2D DirA(A.Dir.X, A.Dir.Y);
+	const FVector2D DirB(B.Dir.X, B.Dir.Y);
+	if (FVector2D::DotProduct(DirA.GetSafeNormal(), DirB.GetSafeNormal()) < 0.995f)
+	{
+		return false;
+	}
+
+	const FAKBoardState NextA = ApplyShotToState(State, A);
+	const FAKBoardState NextB = ApplyShotToState(State, B);
+
+	if (!NextA.Stones.IsValidIndex(A.ShooterIndex) || !NextB.Stones.IsValidIndex(B.ShooterIndex))
+	{
+		return false;
+	}
+
+	const FAKStoneState& ShooterA = NextA.Stones[A.ShooterIndex];
+	const FAKStoneState& ShooterB = NextB.Stones[B.ShooterIndex];
+	if (ShooterA.bOut != ShooterB.bOut || FVector::Dist2D(ShooterA.Pos, ShooterB.Pos) > 12.f)
+	{
+		return false;
+	}
+
+	if (A.TargetIndex != INDEX_NONE && NextA.Stones.IsValidIndex(A.TargetIndex) && NextB.Stones.IsValidIndex(B.TargetIndex))
+	{
+		const FAKStoneState& TargetA = NextA.Stones[A.TargetIndex];
+		const FAKStoneState& TargetB = NextB.Stones[B.TargetIndex];
+		if (TargetA.bOut != TargetB.bOut || FVector::Dist2D(TargetA.Pos, TargetB.Pos) > 12.f)
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+void AAKAIController::DeduplicateCandidatesForState(const FAKBoardState& State, TArray<FAKShot>& InOutShots) const
+{
+	TArray<FAKShot> UniqueShots;
+	UniqueShots.Reserve(InOutShots.Num());
+
+	for (const FAKShot& Candidate : InOutShots)
+	{
+		bool bDuplicate = false;
+		for (const FAKShot& Existing : UniqueShots)
+		{
+			if (AreShotsEquivalentForState(State, Existing, Candidate))
+			{
+				bDuplicate = true;
+				break;
+			}
+		}
+
+		if (!bDuplicate)
+		{
+			UniqueShots.Add(Candidate);
+		}
+	}
+
+	InOutShots = MoveTemp(UniqueShots);
+}
+
 FAKBoardState AAKAIController::ApplyShotToState(const FAKBoardState& State, const FAKShot& Shot) const
 {
 	FAKBoardState Next = State;
@@ -747,7 +947,10 @@ float AAKAIController::EvaluateBoardState(const FAKBoardState& State) const
 
 float AAKAIController::EvaluateActionImmediate(const FAKBoardState& State, const FAKShot& Shot) const
 {
-	return EvaluateBoardState(ApplyShotToState(State, Shot));
+	const FAKBoardState Next = ApplyShotToState(State, Shot);
+	const float BoardScore = EvaluateBoardState(Next);
+	const float ThreatDelta = EvaluateSideThreatExposure(Next, false) - EvaluateSideThreatExposure(Next, true);
+	return BoardScore + ThreatDelta * ThreatPenaltyWeight;
 }
 
 bool AAKAIController::IsTerminalState(const FAKBoardState& State) const
@@ -777,6 +980,8 @@ bool AAKAIController::IsTerminalState(const FAKBoardState& State) const
 
 float AAKAIController::MinimaxScore(const FAKBoardState& State, int32 Depth, float Alpha, float Beta, float BasePowerPerMeter, float MinPower, float MaxPower, int32 BeamWidth) const
 {
+	++PerfVisitedNodes;
+
 	if (Depth == 0 || IsTerminalState(State))
 	{
 		return EvaluateBoardState(State);
@@ -791,7 +996,8 @@ float AAKAIController::MinimaxScore(const FAKBoardState& State, int32 Depth, flo
 
 	for (FAKShot& Candidate : Candidates)
 	{
-		Candidate.Score = EvaluateActionImmediate(State, Candidate);
+		Candidate.ImmediateScore = EvaluateActionImmediate(State, Candidate);
+		Candidate.Score = ScoreCandidateOrdering(State, Candidate);
 	}
 
 	Candidates.Sort([bMaximizing = State.bAITurn](const FAKShot& A, const FAKShot& B)
@@ -844,10 +1050,12 @@ FAKShot AAKAIController::PickBestShot_MinimaxD2(const TArray<AAKStone*>& MyStone
 	{
 		return FAKShot{};
 	}
+	PerfRootCandidateCount = Candidates.Num();
 
 	for (FAKShot& Candidate : Candidates)
 	{
-		Candidate.Score = EvaluateActionImmediate(Root, Candidate);
+		Candidate.ImmediateScore = EvaluateActionImmediate(Root, Candidate);
+		Candidate.Score = ScoreCandidateOrdering(Root, Candidate);
 	}
 
 	Candidates.Sort([](const FAKShot& A, const FAKShot& B)
@@ -868,7 +1076,8 @@ FAKShot AAKAIController::PickBestShot_MinimaxD2(const TArray<AAKStone*>& MyStone
 	for (FAKShot& Candidate : Candidates)
 	{
 		const FAKBoardState Next = ApplyShotToState(Root, Candidate);
-		const float Value = MinimaxScore(Next, 1, Alpha, Beta, BasePowerPerMeter, MinPower, MaxPower, BeamOpp);
+		const int32 RemainingDepth = FMath::Max(0, SearchDepth - 1);
+		const float Value = MinimaxScore(Next, RemainingDepth, Alpha, Beta, BasePowerPerMeter, MinPower, MaxPower, BeamOpp);
 		Candidate.Score = Value;
 		if (Value > BestValue)
 		{
@@ -876,6 +1085,31 @@ FAKShot AAKAIController::PickBestShot_MinimaxD2(const TArray<AAKStone*>& MyStone
 			Best = Candidate;
 		}
 		Alpha = FMath::Max(Alpha, BestValue);
+	}
+
+	if (bLogAIDecision)
+	{
+		TArray<FAKShot> DebugCandidates = Candidates;
+		DebugCandidates.Sort([](const FAKShot& A, const FAKShot& B)
+		{
+			return A.Score > B.Score;
+		});
+
+		const int32 LogCount = FMath::Clamp(DebugTopCandidateCount, 1, DebugCandidates.Num());
+		for (int32 Index = 0; Index < LogCount; ++Index)
+		{
+			const FAKShot& Candidate = DebugCandidates[Index];
+			UE_LOG(LogTemp, Warning,
+				TEXT("[AI:Candidate %d] minimax=%.1f immediate=%.1f power=%.1f dir=(%.2f,%.2f) shooter=%d target=%d"),
+				Index + 1,
+				Candidate.Score,
+				Candidate.ImmediateScore,
+				Candidate.Power,
+				Candidate.Dir.X,
+				Candidate.Dir.Y,
+				Candidate.ShooterIndex,
+				Candidate.TargetIndex);
+		}
 	}
 
 	Best.Score = BestValue;
